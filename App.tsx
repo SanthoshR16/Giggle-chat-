@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Backend } from './services/mockBackend';
+import { SupabaseService, supabase } from './services/supabaseService';
 import { User, AppView } from './types';
 import LoginScreen from './components/LoginScreen';
 import ChatLayout from './components/ChatLayout';
@@ -12,27 +12,75 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    const storedId = localStorage.getItem('nexus_auth_uid');
-    if (storedId) {
-      const existingUser = Backend.getAllUsers().find(u => u.id === storedId);
-      if (existingUser) {
-        setUser(existingUser);
-        setView(AppView.CHAT);
+    let isMounted = true;
+
+    const initializeApp = async () => {
+      try {
+        // 1. Fast Load: Get User from Session + LocalStorage (Non-blocking)
+        const cachedUser = await SupabaseService.getCurrentUser();
+        
+        if (isMounted && cachedUser) {
+          setUser(cachedUser);
+          setView(AppView.CHAT);
+
+          // 2. Background Refresh: Update profile from DB without blocking UI
+          SupabaseService.refreshProfile(cachedUser.id).then((updatedUser) => {
+            if (isMounted && updatedUser) {
+               setUser(prev => prev ? { ...prev, ...updatedUser } : updatedUser);
+            }
+          });
+        }
+      } catch (e) {
+        console.warn("Init failed:", e);
+      } finally {
+        if (isMounted) setIsLoading(false);
       }
-    }
-    setIsLoading(false);
-  }, []);
+    };
 
-  const handleLogin = (loggedInUser: User) => {
-    setUser(loggedInUser);
-    localStorage.setItem('nexus_auth_uid', loggedInUser.id);
-    setView(AppView.CHAT);
-  };
+    initializeApp();
 
-  const handleLogout = () => {
-    setUser(null);
-    localStorage.removeItem('nexus_auth_uid');
+    // 3. Hard Safety Timeout: Force UI to render after 1.5s no matter what
+    const safetyTimeout = setTimeout(() => {
+      if (isMounted && isLoading) {
+         console.warn("Forcing UI load due to timeout");
+         setIsLoading(false);
+      }
+    }, 1500);
+
+    // 4. Listen for auth changes
+    const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (!isMounted) return;
+      
+      if (event === 'SIGNED_IN' && session?.user) {
+         // If we are already logged in, this might just be a token refresh
+         if (!user) {
+            setIsLoading(true);
+            const u = await SupabaseService.getCurrentUser();
+            if (isMounted) {
+                setUser(u);
+                setView(AppView.CHAT);
+                setIsLoading(false);
+            }
+         }
+      } else if (event === 'SIGNED_OUT') {
+         setUser(null);
+         setView(AppView.LOGIN);
+         setIsLoading(false);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      clearTimeout(safetyTimeout);
+      authListener.subscription.unsubscribe();
+    };
+  }, []); // Run once on mount
+
+  const handleLogout = async () => {
+    setIsLoading(true);
+    await SupabaseService.logout();
     setView(AppView.LOGIN);
+    setIsLoading(false);
   };
   
   const handleUpdateUser = (updates: Partial<User>) => {
@@ -43,15 +91,16 @@ export default function App() {
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-slate-900 flex items-center justify-center text-slate-200">
-        <Loader2 className="w-10 h-10 animate-spin text-blue-500" />
+      <div className="fixed inset-0 bg-slate-950 flex flex-col items-center justify-center text-slate-200 z-[9999]">
+        <Loader2 className="w-10 h-10 animate-spin text-blue-500 mb-4" />
+        <p className="text-sm font-medium animate-pulse text-slate-400">Loading Giggle Chat...</p>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen font-sans antialiased overflow-hidden">
-      {view === AppView.LOGIN && <LoginScreen onLogin={handleLogin} />}
+    <div className="h-[100dvh] w-full overflow-hidden bg-slate-950">
+      {view === AppView.LOGIN && <LoginScreen onLogin={(u) => { setUser(u); setView(AppView.CHAT); }} />} 
       
       {view === AppView.CHAT && user && (
         <ChatLayout 

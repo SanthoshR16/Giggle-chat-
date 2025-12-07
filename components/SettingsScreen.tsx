@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { User } from '../types';
-import { Backend } from '../services/mockBackend';
-import { ArrowLeft, UserX, Unlock, Camera, Save, Loader2, Bot, Palette, Check } from 'lucide-react';
+import { SupabaseService } from '../services/supabaseService';
+import { ArrowLeft, Camera, Loader2, Bot, Palette, Check, AlertTriangle, Shield, Unlock, RefreshCw } from 'lucide-react';
 import { THEMES } from '../theme';
 
 interface SettingsProps {
@@ -11,21 +11,32 @@ interface SettingsProps {
 }
 
 const SettingsScreen: React.FC<SettingsProps> = ({ currentUser, onBack, onUpdateUser }) => {
-  const [blockedUsers, setBlockedUsers] = useState<User[]>([]);
   const [name, setName] = useState(currentUser.name);
   const [botName, setBotName] = useState(currentUser.customBotName || 'Giggle AI');
   const [avatarUrl, setAvatarUrl] = useState(currentUser.avatarUrl);
   const [selectedTheme, setSelectedTheme] = useState(currentUser.theme || 'midnight');
   const [isSaving, setIsSaving] = useState(false);
+  const [saveSuccess, setSaveSuccess] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [blockedUsers, setBlockedUsers] = useState<User[]>([]);
+  
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    setBlockedUsers(Backend.getBlockedUsers(currentUser.id));
+    // Fetch blocked users
+    SupabaseService.getBlockedUsers(currentUser.id).then(setBlockedUsers);
   }, [currentUser.id]);
 
-  const handleUnblock = async (blockedId: string) => {
-    await Backend.unblockUser(currentUser.id, blockedId);
+  const handleUnblockUser = async (blockedId: string) => {
+    await SupabaseService.unblockUser(currentUser.id, blockedId);
     setBlockedUsers(prev => prev.filter(u => u.id !== blockedId));
+  };
+  
+  const handleUnblockAll = async () => {
+      if (window.confirm("Unblock all users?")) {
+        await SupabaseService.unblockAll(currentUser.id);
+        setBlockedUsers([]);
+      }
   };
 
   const resizeImage = (file: File): Promise<string> => {
@@ -37,8 +48,7 @@ const SettingsScreen: React.FC<SettingsProps> = ({ currentUser, onBack, onUpdate
           const canvas = document.createElement('canvas');
           let width = img.width;
           let height = img.height;
-          
-          const MAX_SIZE = 100; // Small size for performance
+          const MAX_SIZE = 96; 
 
           if (width > height) {
             if (width > MAX_SIZE) {
@@ -65,10 +75,10 @@ const SettingsScreen: React.FC<SettingsProps> = ({ currentUser, onBack, onUpdate
           ctx.drawImage(img, 0, 0, width, height);
           resolve(canvas.toDataURL('image/jpeg', 0.6));
         };
-        img.onerror = (err) => reject(err);
+        img.onerror = reject;
         img.src = event.target?.result as string;
       };
-      reader.onerror = (err) => reject(err);
+      reader.onerror = reject;
       reader.readAsDataURL(file);
     });
   };
@@ -76,18 +86,24 @@ const SettingsScreen: React.FC<SettingsProps> = ({ currentUser, onBack, onUpdate
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
+      if (file.size > 5 * 1024 * 1024) {
+        alert("Image too large (Max 5MB)");
+        return;
+      }
       try {
         const resizedUrl = await resizeImage(file);
         setAvatarUrl(resizedUrl);
       } catch (error) {
-        console.error("Error processing image:", error);
-        alert("Could not process this image. Please try a different one.");
+        console.error("Image error:", error);
       }
     }
   };
 
   const handleSaveProfile = async () => {
     setIsSaving(true);
+    setSaveSuccess(false);
+    setErrorMsg(null);
+
     try {
       const updates = { 
         name, 
@@ -96,16 +112,28 @@ const SettingsScreen: React.FC<SettingsProps> = ({ currentUser, onBack, onUpdate
         theme: selectedTheme
       };
       
-      await Backend.updateProfile(currentUser.id, updates);
+      const { error } = await SupabaseService.updateProfile(currentUser.id, updates);
       
-      // Optimistically update parent to reflect changes immediately without reload
+      if (error) {
+          throw new Error(error.message);
+      }
+      
       onUpdateUser(updates);
-      
-      setIsSaving(false);
-      onBack(); // Go back to chat
-    } catch (error) {
+      setSaveSuccess(true);
+      setTimeout(() => {
+        setIsSaving(false);
+        setSaveSuccess(false);
+        onBack(); 
+      }, 1000); 
+
+    } catch (error: any) {
       console.error("Save failed:", error);
-      alert("Failed to save profile. Please try again.");
+      const msg = error.message || "Unknown error";
+      if (msg.includes("policy") || msg.includes("permission")) {
+          setErrorMsg("Permission Denied: Ensure you have an UPDATE policy in Supabase.");
+      } else {
+          setErrorMsg(`Error: ${msg}`);
+      }
       setIsSaving(false);
     }
   };
@@ -122,46 +150,51 @@ const SettingsScreen: React.FC<SettingsProps> = ({ currentUser, onBack, onUpdate
       </div>
 
       <div className="p-6 space-y-8">
-        
-        {/* Profile Section */}
+        {errorMsg && (
+            <div className="bg-red-900/50 border border-red-500 rounded-xl p-4 flex gap-3 text-red-200">
+                <AlertTriangle className="w-6 h-6 shrink-0" />
+                <div className="text-xs font-mono">{errorMsg}</div>
+            </div>
+        )}
+
         <section>
           <h2 className={`text-sm font-bold ${currentTheme.textMuted} uppercase tracking-wider mb-4`}>Your Profile</h2>
           <div className={`${currentTheme.bgPanel} rounded-2xl p-6 border ${currentTheme.border} flex flex-col items-center gap-6`}>
             
             <div className="relative group cursor-pointer" onClick={() => fileInputRef.current?.click()}>
-              <img src={avatarUrl} alt="Profile" className={`w-24 h-24 rounded-full border-4 ${currentTheme.border} object-cover group-hover:border-current transition-colors`} />
+              <img src={avatarUrl} alt="Profile" className={`w-28 h-28 rounded-full border-4 ${currentTheme.border} object-cover group-hover:border-current transition-colors shadow-lg`} />
               <div className="absolute inset-0 bg-black/40 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
                 <Camera className="w-8 h-8 text-white" />
               </div>
               <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleFileChange} />
             </div>
+            <p className="text-xs text-slate-500 font-medium">Tap photo to change</p>
 
             <div className="w-full space-y-4">
               <div>
-                <label className={`block text-xs ${currentTheme.textMuted} mb-1 ml-1`}>Username</label>
+                <label className={`block text-xs ${currentTheme.textMuted} mb-1 ml-1 font-bold`}>USERNAME</label>
                 <input 
                   type="text" 
                   value={name} 
                   onChange={(e) => setName(e.target.value)}
-                  className={`w-full ${currentTheme.inputBg} border ${currentTheme.border} rounded-xl px-4 py-3 ${currentTheme.textMain} focus:outline-none focus:ring-1 focus:ring-current`}
+                  className={`w-full ${currentTheme.inputBg} border ${currentTheme.border} rounded-xl px-4 py-3 ${currentTheme.textMain} focus:outline-none focus:ring-1 focus:ring-current transition-all`}
                 />
               </div>
 
               <div>
-                <label className={`block text-xs ${currentTheme.textMuted} mb-1 ml-1 flex items-center gap-1`}><Bot className="w-3 h-3"/> AI Bot Name</label>
+                <label className={`block text-xs ${currentTheme.textMuted} mb-1 ml-1 flex items-center gap-1 font-bold`}><Bot className="w-3 h-3"/> AI BOT NAME</label>
                 <input 
                   type="text" 
                   value={botName} 
                   onChange={(e) => setBotName(e.target.value)}
                   placeholder="Name your AI..."
-                  className={`w-full ${currentTheme.inputBg} border ${currentTheme.border} rounded-xl px-4 py-3 ${currentTheme.textMain} focus:outline-none focus:ring-1 focus:ring-current`}
+                  className={`w-full ${currentTheme.inputBg} border ${currentTheme.border} rounded-xl px-4 py-3 ${currentTheme.textMain} focus:outline-none focus:ring-1 focus:ring-current transition-all`}
                 />
               </div>
             </div>
           </div>
         </section>
 
-        {/* Theme Section */}
         <section>
           <h2 className={`text-sm font-bold ${currentTheme.textMuted} uppercase tracking-wider mb-4`}>Appearance</h2>
           <div className={`${currentTheme.bgPanel} rounded-2xl p-6 border ${currentTheme.border}`}>
@@ -186,55 +219,51 @@ const SettingsScreen: React.FC<SettingsProps> = ({ currentUser, onBack, onUpdate
           </div>
         </section>
 
-        {/* Blocked Users Section */}
         <section>
-          <h2 className={`text-sm font-bold ${currentTheme.textMuted} uppercase tracking-wider mb-4`}>Privacy & Security</h2>
-          <div className={`${currentTheme.bgPanel} rounded-2xl p-6 border ${currentTheme.border}`}>
-            <h3 className="font-bold mb-2 flex items-center gap-2">
-               <UserX className="w-4 h-4 text-red-400" /> Blocked List
-            </h3>
-            <p className={`text-sm ${currentTheme.textMuted} mb-4`}>
-              Only you can unblock users you have blocked or who were auto-blocked by the system.
-            </p>
-
-            <div className="space-y-3">
-              {blockedUsers.length === 0 ? (
-                <div className={`text-center py-6 ${currentTheme.textMuted} text-sm italic border-2 border-dashed ${currentTheme.border} rounded-xl`}>
-                  No blocked users.
+           <h2 className={`text-sm font-bold ${currentTheme.textMuted} uppercase tracking-wider mb-4`}>Safety & Privacy</h2>
+           <div className={`${currentTheme.bgPanel} rounded-2xl p-6 border ${currentTheme.border}`}>
+                <div className="flex items-center justify-between mb-4">
+                    <h3 className={`font-bold flex items-center gap-2 ${currentTheme.textMain}`}>
+                        <Shield className="w-4 h-4" /> Blocked Users
+                    </h3>
+                    {blockedUsers.length > 0 && (
+                        <button onClick={handleUnblockAll} className="text-xs text-red-400 hover:text-red-300 flex items-center gap-1">
+                            <RefreshCw className="w-3 h-3" /> Unblock All
+                        </button>
+                    )}
                 </div>
-              ) : (
-                blockedUsers.map(user => (
-                  <div key={user.id} className={`flex items-center justify-between p-3 ${currentTheme.bgPage} rounded-xl border ${currentTheme.border}`}>
-                    <div className="flex items-center gap-3">
-                      <img src={user.avatarUrl} alt={user.name} className="w-8 h-8 rounded-full opacity-50 grayscale" />
-                      <div>
-                        <div className={`text-sm font-bold ${currentTheme.textMain}`}>{user.name}</div>
-                      </div>
+                {blockedUsers.length === 0 ? (
+                    <div className={`text-center py-4 text-sm ${currentTheme.textMuted}`}>You haven't blocked anyone.</div>
+                ) : (
+                    <div className="space-y-3">
+                        {blockedUsers.map(user => (
+                            <div key={user.id} className={`flex items-center justify-between p-3 bg-black/20 rounded-xl border ${currentTheme.border}`}>
+                                <div className="flex items-center gap-3">
+                                    <img src={user.avatarUrl} alt={user.name} className="w-8 h-8 rounded-full" />
+                                    <span className="text-sm font-bold">{user.name}</span>
+                                </div>
+                                <button 
+                                    onClick={() => handleUnblockUser(user.id)}
+                                    className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-white text-xs font-bold rounded-lg transition flex items-center gap-1"
+                                >
+                                    <Unlock className="w-3 h-3" /> Unblock
+                                </button>
+                            </div>
+                        ))}
                     </div>
-                    <button
-                      onClick={() => handleUnblock(user.id)}
-                      className={`flex items-center gap-1 px-3 py-1.5 bg-black/20 hover:bg-black/40 ${currentTheme.textMain} rounded-lg text-xs border ${currentTheme.border} transition`}
-                    >
-                      <Unlock className="w-3 h-3" /> Unblock
-                    </button>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
+                )}
+           </div>
         </section>
 
-        <div className="pt-4">
+        <div className="pt-4 pb-8">
              <button 
                 onClick={handleSaveProfile}
                 disabled={isSaving}
-                className={`w-full ${currentTheme.primary} ${currentTheme.primaryHover} text-white font-bold py-4 rounded-xl flex items-center justify-center gap-2 transition shadow-lg transform active:scale-[0.98]`}
+                className={`w-full ${saveSuccess ? 'bg-emerald-600' : 'bg-gradient-to-r from-blue-600 to-indigo-600'} text-white font-bold py-4 rounded-xl flex items-center justify-center gap-2 transition-all shadow-lg`}
               >
-                {isSaving ? <Loader2 className="w-5 h-5 animate-spin" /> : <Save className="w-4 h-4" />}
-                Save All Changes
+                {isSaving ? <Loader2 className="w-5 h-5 animate-spin" /> : saveSuccess ? "Saved!" : "Save Changes"}
               </button>
         </div>
-
       </div>
     </div>
   );

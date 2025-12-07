@@ -37,10 +37,12 @@ export interface Message {
   senderId: string;
   receiverId: string;
   text: string;
+  imageUrl?: string; // New: Support for images
   timestamp: number;
   status: 'sent' | 'delivered' | 'read' | 'quarantined' | 'pending';
   toxicity?: ToxicityResult;
-  type?: 'text' | 'call_link';
+  type?: 'text' | 'call_link' | 'image';
+  reactions?: Record<string, string>; // userId -> emoji
 }
 
 export interface ChatSession {

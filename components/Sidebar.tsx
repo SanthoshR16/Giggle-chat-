@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { User, FriendRequest } from '../types';
-import { Backend } from '../services/mockBackend';
-import { Search, UserPlus, LogOut, Settings, Users, Bell, Check, X } from 'lucide-react';
+import { SupabaseService } from '../services/supabaseService';
+import { Search, UserPlus, LogOut, Settings, Users, Bell, Check, X, Circle } from 'lucide-react';
 import { THEMES } from '../theme';
 
 interface SidebarProps {
@@ -22,105 +22,136 @@ const Sidebar: React.FC<SidebarProps> = ({ currentUser, onSelectFriend, selected
 
   const theme = THEMES[currentUser.theme || 'midnight'];
 
-  const refreshData = useCallback(() => {
-    setContacts(Backend.getContacts(currentUser.id));
-    setRequests(Backend.getIncomingRequests(currentUser.id));
+  const refreshData = useCallback(async () => {
+    try {
+        const myContacts = await SupabaseService.getContacts(currentUser.id);
+        setContacts(myContacts);
+        
+        const myRequests = await SupabaseService.getIncomingRequests(currentUser.id);
+        setRequests(myRequests);
+    } catch(e) {
+        console.error("Failed to refresh sidebar", e);
+    }
   }, [currentUser.id]);
 
   useEffect(() => {
     refreshData();
-    const interval = setInterval(refreshData, 3000); 
-    return () => clearInterval(interval);
-  }, [refreshData]);
+    // Use Realtime subscription instead of polling for battery efficiency
+    const unsubscribe = SupabaseService.subscribeToRequests(currentUser.id, () => {
+        refreshData();
+    });
+    
+    return () => { unsubscribe(); };
+  }, [refreshData, currentUser.id]);
 
   useEffect(() => {
-    if (activeTab === 'search' && searchQuery.trim()) {
-      const all = Backend.getAllUsers();
-      const filtered = all.filter(u => 
-        u.id !== currentUser.id && 
-        (u.name.toLowerCase().includes(searchQuery.toLowerCase()) || u.email.includes(searchQuery.toLowerCase()))
-      );
-      setSearchResults(filtered);
-    } else {
-      setSearchResults([]);
-    }
+    const doSearch = async () => {
+        if (activeTab === 'search' && searchQuery.trim()) {
+            const results = await SupabaseService.searchUsers(searchQuery, currentUser.id);
+            setSearchResults(results);
+        } else {
+            setSearchResults([]);
+        }
+    };
+    const timer = setTimeout(doSearch, 500);
+    return () => clearTimeout(timer);
   }, [searchQuery, activeTab, currentUser.id]);
 
   const handleSendRequest = async (userId: string) => {
-    const res = await Backend.sendFriendRequest(currentUser.id, userId);
+    const res = await SupabaseService.sendFriendRequest(currentUser.id, userId);
     setNotificationMsg({ type: res.success ? 'success' : 'error', text: res.message });
     setTimeout(() => setNotificationMsg(null), 3000);
   };
 
   const handleRespond = async (reqId: string, action: 'accept' | 'deny') => {
-    await Backend.respondToRequest(reqId, action);
+    await SupabaseService.respondToRequest(reqId, action);
     refreshData();
     if (action === 'deny') {
-      setNotificationMsg({ type: 'success', text: "User denied and blocked." });
+      setNotificationMsg({ type: 'success', text: "User denied." });
       setTimeout(() => setNotificationMsg(null), 3000);
     }
   };
 
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case 'online': return 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)]';
+      case 'busy': return 'bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.6)]';
+      case 'offline': return 'bg-slate-500';
+      default: return 'bg-slate-400';
+    }
+  };
+
   return (
-    <div className={`flex flex-col h-full ${theme.bgPanel} ${theme.textMain}`}>
-      {/* Header */}
-      <div className={`p-4 ${theme.bgPanel} border-b ${theme.border} flex items-center justify-between`}>
-        <div className="flex items-center gap-3">
-          <img src={currentUser.avatarUrl} alt="Profile" className={`w-10 h-10 rounded-full border ${theme.border}`} />
-          <div>
-            <h3 className={`font-bold ${theme.textMain} text-sm`}>{currentUser.name}</h3>
-            <div className="flex items-center gap-1.5">
-              <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></span>
-              <span className={`text-xs ${theme.textMuted}`}>Online</span>
+    <div className={`flex flex-col h-full ${theme.bgPanel} backdrop-blur-md border-r ${theme.border}`}>
+      
+      {/* Current User Card */}
+      <div className={`p-5 mb-2 relative z-10`}>
+        <div className={`relative overflow-hidden rounded-2xl p-4 border ${theme.border} bg-white/5 shadow-lg group`}>
+            {/* Subtle gradient background inside card */}
+            <div className={`absolute inset-0 opacity-10 ${theme.gradient}`}></div>
+            
+            <div className="relative flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                    <div className="relative">
+                        <img src={currentUser.avatarUrl} alt="Profile" className="w-12 h-12 rounded-full object-cover border-2 border-white/20 shadow-md" />
+                        <span className={`absolute bottom-0 right-0 w-3.5 h-3.5 ${getStatusColor(currentUser.status)} border-2 border-slate-900 rounded-full`}></span>
+                    </div>
+                    <div>
+                        <h3 className={`font-bold ${theme.textMain} text-sm leading-tight`}>{currentUser.name}</h3>
+                        <p className={`text-[11px] ${theme.textMuted} uppercase tracking-wider font-medium mt-0.5 opacity-80`}>{currentUser.status}</p>
+                    </div>
+                </div>
+                
+                <div className="flex flex-col gap-1">
+                    <button onClick={onOpenSettings} className={`p-2 text-slate-400 hover:text-white bg-black/20 hover:bg-black/40 rounded-lg transition-all`}>
+                        <Settings className="w-4 h-4" />
+                    </button>
+                    <button onClick={onLogout} className={`p-2 text-slate-400 hover:text-red-400 bg-black/20 hover:bg-black/40 rounded-lg transition-all`}>
+                        <LogOut className="w-4 h-4" />
+                    </button>
+                </div>
             </div>
-          </div>
-        </div>
-        <div className="flex gap-1">
-          <button onClick={onOpenSettings} className={`p-2 ${theme.textMuted} hover:${theme.textMain} rounded-full hover:bg-black/10 transition`}>
-            <Settings className="w-5 h-5" />
-          </button>
-          <button onClick={onLogout} className={`p-2 ${theme.textMuted} hover:text-red-400 rounded-full hover:bg-black/10 transition`}>
-            <LogOut className="w-5 h-5" />
-          </button>
         </div>
       </div>
 
-      {/* Tabs */}
-      <div className={`flex p-2 gap-2 bg-black/10`}>
-        <button 
-          onClick={() => setActiveTab('friends')}
-          className={`flex-1 py-2 text-sm font-bold rounded-lg flex items-center justify-center gap-2 transition ${activeTab === 'friends' ? `${theme.primary} text-white shadow-md` : `${theme.textMuted} hover:bg-black/10`}`}
-        >
-          <Users className="w-4 h-4" /> Friends
-        </button>
-        <button 
-          onClick={() => setActiveTab('search')}
-          className={`flex-1 py-2 text-sm font-bold rounded-lg flex items-center justify-center gap-2 transition ${activeTab === 'search' ? `${theme.primary} text-white shadow-md` : `${theme.textMuted} hover:bg-black/10`}`}
-        >
-          <UserPlus className="w-4 h-4" /> Add
-        </button>
+      {/* Navigation Tabs */}
+      <div className="px-5 mb-4">
+        <div className="flex p-1 gap-1 bg-black/30 rounded-xl border border-white/5">
+            <button 
+            onClick={() => setActiveTab('friends')}
+            className={`flex-1 py-2.5 text-xs font-bold rounded-lg flex items-center justify-center gap-2 transition-all duration-300 ${activeTab === 'friends' ? `${theme.primary} text-white shadow-lg` : `${theme.textMuted} hover:bg-white/5 hover:text-white`}`}
+            >
+            <Users className="w-3.5 h-3.5" /> Friends
+            </button>
+            <button 
+            onClick={() => setActiveTab('search')}
+            className={`flex-1 py-2.5 text-xs font-bold rounded-lg flex items-center justify-center gap-2 transition-all duration-300 ${activeTab === 'search' ? `${theme.primary} text-white shadow-lg` : `${theme.textMuted} hover:bg-white/5 hover:text-white`}`}
+            >
+            <UserPlus className="w-3.5 h-3.5" /> Add
+            </button>
+        </div>
       </div>
 
-      {/* Toast Notification */}
+      {/* Notification Toast */}
       {notificationMsg && (
-        <div className={`mx-4 mt-2 p-2 rounded text-xs font-bold text-center ${notificationMsg.type === 'success' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'}`}>
+        <div className={`mx-5 mb-4 px-3 py-2 rounded-lg text-xs font-bold text-center animate-in fade-in slide-in-from-top-2 border ${notificationMsg.type === 'success' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-300' : 'bg-red-500/10 border-red-500/20 text-red-300'}`}>
           {notificationMsg.text}
         </div>
       )}
 
-      {/* Content */}
-      <div className="flex-1 overflow-y-auto">
+      {/* Main List Content */}
+      <div className="flex-1 overflow-y-auto px-3 pb-4 space-y-1">
         {activeTab === 'friends' && (
           <>
-            {/* Friend Requests */}
+            {/* Pending Requests */}
             {requests.length > 0 && (
-              <div className={`p-4 border-b ${theme.border}`}>
-                <h4 className={`text-xs font-bold ${theme.textMuted} uppercase mb-3 flex items-center gap-2`}>
-                  <Bell className="w-3 h-3" /> Requests ({requests.length})
+              <div className="mb-4 mx-2">
+                <h4 className={`text-[10px] font-black ${theme.textMuted} uppercase tracking-widest mb-3 flex items-center gap-2 px-1`}>
+                  <Bell className="w-3 h-3" /> Incoming ({requests.length})
                 </h4>
-                <div className="space-y-3">
+                <div className="space-y-2">
                   {requests.map(req => (
-                    <div key={req.id} className={`bg-black/20 p-3 rounded-lg border ${theme.border}`}>
+                    <div key={req.id} className={`bg-slate-900/40 p-3 rounded-xl border ${theme.border} hover:border-white/20 transition-colors`}>
                       <div className="flex items-center gap-3 mb-3">
                         <img src={req.sender.avatarUrl} className="w-8 h-8 rounded-full" />
                         <span className={`text-sm font-bold ${theme.textMain} truncate`}>{req.sender.name}</span>
@@ -128,13 +159,13 @@ const Sidebar: React.FC<SidebarProps> = ({ currentUser, onSelectFriend, selected
                       <div className="flex gap-2">
                         <button 
                           onClick={() => handleRespond(req.id, 'accept')}
-                          className="flex-1 bg-blue-600 hover:bg-blue-500 text-white text-xs py-1.5 rounded flex items-center justify-center gap-1 transition font-medium"
+                          className="flex-1 bg-gradient-to-r from-blue-600 to-indigo-600 hover:brightness-110 text-white text-[10px] uppercase font-bold py-2 rounded-lg flex items-center justify-center gap-1 transition"
                         >
                           <Check className="w-3 h-3" /> Accept
                         </button>
                         <button 
                           onClick={() => handleRespond(req.id, 'deny')}
-                          className="flex-1 bg-slate-700 hover:bg-red-600 hover:text-white text-slate-300 text-xs py-1.5 rounded flex items-center justify-center gap-1 transition group font-medium"
+                          className="flex-1 bg-white/5 hover:bg-red-500/20 hover:text-red-300 text-slate-400 text-[10px] uppercase font-bold py-2 rounded-lg flex items-center justify-center gap-1 transition"
                         >
                           <X className="w-3 h-3" /> Deny
                         </button>
@@ -145,60 +176,76 @@ const Sidebar: React.FC<SidebarProps> = ({ currentUser, onSelectFriend, selected
               </div>
             )}
 
-            {/* Contacts List */}
-            <div className="p-2 space-y-1">
-              {contacts.length === 0 ? (
-                <div className={`text-center ${theme.textMuted} text-sm py-8`}>No friends yet.</div>
-              ) : (
-                contacts.map(friend => (
-                  <button
-                    key={friend.id}
-                    onClick={() => onSelectFriend(friend.id)}
-                    className={`w-full flex items-center gap-3 p-3 rounded-xl transition-all ${selectedFriendId === friend.id ? 'bg-black/20 shadow-inner' : 'hover:bg-black/10'}`}
-                  >
-                    <div className="relative">
-                      <img src={friend.avatarUrl} className={`w-12 h-12 rounded-full border-2 ${selectedFriendId === friend.id ? theme.border : 'border-transparent'}`} />
-                      {friend.status === 'online' && <span className={`absolute bottom-0 right-0 w-3.5 h-3.5 bg-emerald-500 border-2 ${theme.bgPanel} rounded-full`}></span>}
-                    </div>
-                    <div className="flex-1 text-left">
-                      <h4 className={`text-sm font-bold ${selectedFriendId === friend.id ? theme.textMain : theme.textMain}`}>{friend.name}</h4>
-                      <p className={`text-xs ${theme.textMuted} truncate`}>Click to giggle</p>
-                    </div>
-                  </button>
-                ))
-              )}
-            </div>
+            {/* Friend List */}
+            {contacts.length === 0 ? (
+                <div className="flex flex-col items-center justify-center h-40 text-center px-4">
+                     <div className="w-12 h-12 bg-white/5 rounded-full flex items-center justify-center mb-3">
+                        <Users className={`w-6 h-6 ${theme.textMuted} opacity-40`} />
+                     </div>
+                     <p className={`${theme.textMuted} text-xs`}>No friends yet. <br/> Switch tabs to find people!</p>
+                </div>
+            ) : (
+                <div className="space-y-1">
+                    {contacts.map(friend => (
+                        <button
+                            key={friend.id}
+                            onClick={() => onSelectFriend(friend.id)}
+                            className={`w-full flex items-center gap-3 p-3 rounded-xl transition-all duration-200 group relative overflow-hidden ${selectedFriendId === friend.id ? 'bg-white/10 shadow-md' : 'hover:bg-white/5'}`}
+                        >
+                            {/* Selected Indicator Bar */}
+                            {selectedFriendId === friend.id && (
+                                <div className={`absolute left-0 top-3 bottom-3 w-1 ${theme.primary} rounded-r-full shadow-[0_0_10px_currentColor]`}></div>
+                            )}
+
+                            <div className="relative shrink-0">
+                                <img src={friend.avatarUrl} className={`w-10 h-10 rounded-full object-cover border-2 ${selectedFriendId === friend.id ? 'border-white/40' : 'border-transparent group-hover:border-white/20'} transition-all`} />
+                                <span className={`absolute bottom-0 right-0 w-3 h-3 ${getStatusColor(friend.status)} border-2 border-slate-900 rounded-full`}></span>
+                            </div>
+                            <div className="flex-1 text-left min-w-0">
+                                <h4 className={`text-sm font-bold truncate ${selectedFriendId === friend.id ? 'text-white' : theme.textMain} group-hover:text-white transition-colors`}>{friend.name}</h4>
+                                <p className={`text-[11px] truncate ${theme.textMuted} group-hover:text-slate-300 transition-colors`}>
+                                    {friend.isBot ? "AI Assistant" : friend.status}
+                                </p>
+                            </div>
+                        </button>
+                    ))}
+                </div>
+            )}
           </>
         )}
 
         {activeTab === 'search' && (
-          <div className="p-4">
-            <div className="relative mb-4">
-              <Search className={`absolute left-3 top-2.5 w-4 h-4 ${theme.textMuted}`} />
-              <input 
-                type="text" 
-                placeholder="Find users..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className={`w-full ${theme.inputBg} border ${theme.border} rounded-lg pl-9 pr-4 py-2 text-sm ${theme.textMain} focus:outline-none focus:ring-1 focus:ring-opacity-50 transition-all placeholder-opacity-50`}
-              />
+          <div className="px-2 pt-2">
+            <div className="relative mb-4 group">
+              <div className={`absolute -inset-0.5 ${theme.gradient} rounded-xl blur opacity-20 group-focus-within:opacity-50 transition duration-500`}></div>
+              <div className="relative">
+                <Search className={`absolute left-3 top-2.5 w-4 h-4 ${theme.textMuted}`} />
+                <input 
+                    type="text" 
+                    placeholder="Search username or email..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className={`w-full ${theme.inputBg} border ${theme.border} rounded-xl pl-10 pr-4 py-2.5 text-sm ${theme.textMain} focus:outline-none placeholder-slate-500 transition-all`}
+                />
+              </div>
             </div>
             
             <div className="space-y-2">
               {searchResults.length === 0 && searchQuery && (
-                <div className={`text-center ${theme.textMuted} text-xs`}>No users found.</div>
+                <div className={`text-center ${theme.textMuted} text-xs py-8`}>No users found.</div>
               )}
               {searchResults.map(user => (
-                <div key={user.id} className={`flex items-center justify-between p-3 bg-black/20 rounded-lg border ${theme.border}`}>
-                  <div className="flex items-center gap-3">
-                    <img src={user.avatarUrl} className="w-8 h-8 rounded-full" />
-                    <div>
-                      <div className={`text-sm font-bold ${theme.textMain}`}>{user.name}</div>
+                <div key={user.id} className={`flex items-center justify-between p-3 bg-white/5 rounded-xl border border-white/5 hover:border-white/10 transition-colors`}>
+                  <div className="flex items-center gap-3 min-w-0">
+                    <img src={user.avatarUrl} className="w-9 h-9 rounded-full bg-slate-800" />
+                    <div className="min-w-0">
+                      <div className={`text-sm font-bold ${theme.textMain} truncate`}>{user.name}</div>
+                      <div className={`text-[10px] ${theme.textMuted} truncate`}>{user.email}</div>
                     </div>
                   </div>
                   <button 
                     onClick={() => handleSendRequest(user.id)}
-                    className={`p-2 ${theme.primary} ${theme.primaryHover} text-white rounded-lg transition shadow-md`}
+                    className={`p-2 ${theme.primary} hover:brightness-110 text-white rounded-lg transition shadow-lg active:scale-95`}
                     title="Send Friend Request"
                   >
                     <UserPlus className="w-4 h-4" />
