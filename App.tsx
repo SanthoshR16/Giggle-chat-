@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { SupabaseService, supabase } from './services/supabaseService';
 import { User, AppView } from './types';
 import LoginScreen from './components/LoginScreen';
@@ -10,74 +10,90 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [view, setView] = useState<AppView>(AppView.LOGIN);
   const [isLoading, setIsLoading] = useState(true);
+  
+  // Use a ref to prevent state updates on unmount
+  const isMounted = useRef(false);
 
   useEffect(() => {
-    let isMounted = true;
+    isMounted.current = true;
 
-    const initAuth = async () => {
+    // 1. Hard Failsafe: No matter what, stop loading after 3 seconds
+    const safetyTimer = setTimeout(() => {
+      if (isMounted.current && isLoading) {
+        console.warn("Loading timed out. Forcing UI render.");
+        setIsLoading(false);
+      }
+    }, 3000);
+
+    const init = async () => {
       try {
-        // Attempt to restore session
-        const currentUser = await SupabaseService.getCurrentUser();
+        // Instant offline check
+        if (!navigator.onLine) {
+           throw new Error("Offline");
+        }
+
+        // Fetch user with a strict 2s timeout logic inline
+        const userPromise = SupabaseService.getCurrentUser();
+        const timeoutPromise = new Promise<null>(resolve => setTimeout(() => resolve(null), 2000));
         
-        if (isMounted) {
+        const currentUser = await Promise.race([userPromise, timeoutPromise]);
+
+        if (isMounted.current) {
           if (currentUser) {
             setUser(currentUser);
             setView(AppView.CHAT);
-            
-            // Background profile refresh (non-blocking)
-            SupabaseService.refreshProfile(currentUser.id).then((updated) => {
-              if (isMounted && updated) {
-                setUser((prev) => (prev ? { ...prev, ...updated } : updated));
-              }
-            });
+            // Background refresh
+            SupabaseService.refreshProfile(currentUser.id).catch(() => {});
           } else {
             setView(AppView.LOGIN);
           }
         }
-      } catch (error) {
-        console.error("Auth initialization failed:", error);
-        if (isMounted) setView(AppView.LOGIN);
+      } catch (e) {
+        console.error("Init failed:", e);
+        if (isMounted.current) setView(AppView.LOGIN);
       } finally {
-        if (isMounted) setIsLoading(false);
+        if (isMounted.current) {
+          setIsLoading(false);
+        }
       }
     };
 
-    initAuth();
+    init();
 
-    // Set up real-time auth listener
+    // Auth Subscription
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      if (!isMounted) return;
+      if (!isMounted.current) return;
 
       if (event === 'SIGNED_OUT') {
         setUser(null);
         setView(AppView.LOGIN);
-        setIsLoading(false);
       } else if (event === 'SIGNED_IN' && session?.user) {
-        // Only fetch if we don't already have the user to avoid redundant calls
-        if (!user) {
-          setIsLoading(true);
-          const u = await SupabaseService.getCurrentUser();
-          if (isMounted && u) {
-            setUser(u);
-            setView(AppView.CHAT);
-          }
-          setIsLoading(false);
+        // Only refresh if we don't have a user or IDs mismatch
+        if (!user || user.id !== session.user.id) {
+           const u = await SupabaseService.getCurrentUser();
+           if (isMounted.current && u) {
+             setUser(u);
+             setView(AppView.CHAT);
+           }
         }
       }
     });
 
     return () => {
-      isMounted = false;
+      isMounted.current = false;
+      clearTimeout(safetyTimer);
       subscription.unsubscribe();
     };
-  }, []); // Run once on mount
+  }, []);
 
   const handleLogout = async () => {
     setIsLoading(true);
     await SupabaseService.logout();
-    setUser(null);
-    setView(AppView.LOGIN);
-    setIsLoading(false);
+    if (isMounted.current) {
+        setUser(null);
+        setView(AppView.LOGIN);
+        setIsLoading(false);
+    }
   };
 
   const handleUpdateUser = (updates: Partial<User>) => {
@@ -91,7 +107,7 @@ export default function App() {
   }
 
   return (
-    <div className="h-[100dvh] w-full overflow-hidden bg-slate-950 text-slate-100 font-sans">
+    <div className="h-[100dvh] w-full overflow-hidden bg-slate-950 text-slate-100 font-sans relative">
       {view === AppView.LOGIN && (
         <LoginScreen 
           onLogin={(u) => {
@@ -101,12 +117,22 @@ export default function App() {
         />
       )} 
       
-      {view === AppView.CHAT && user && (
-        <ChatLayout 
-          currentUser={user} 
-          onLogout={handleLogout}
-          onOpenSettings={() => setView(AppView.SETTINGS)}
-        />
+      {view === AppView.CHAT && (
+        user ? (
+          <ChatLayout 
+            currentUser={user} 
+            onLogout={handleLogout}
+            onOpenSettings={() => setView(AppView.SETTINGS)}
+          />
+        ) : (
+          // Fallback if view is CHAT but user is null (rare race condition)
+          <LoginScreen 
+            onLogin={(u) => {
+              setUser(u);
+              setView(AppView.CHAT);
+            }} 
+          />
+        )
       )}
 
       {view === AppView.SETTINGS && user && (

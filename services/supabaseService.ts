@@ -92,9 +92,17 @@ export const SupabaseService = {
 
   // OPTIMIZED: Returns immediately from LocalStorage/Session
   getCurrentUser: async (): Promise<User | null> => {
+    // 1. Offline Check
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        return null;
+    }
+
     try {
-        const { data } = await supabase.auth.getSession();
-        if (!data.session?.user) return null;
+        const { data, error } = await supabase.auth.getSession();
+        
+        if (error || !data.session?.user) {
+             return null;
+        }
         
         const u = data.session.user;
         
