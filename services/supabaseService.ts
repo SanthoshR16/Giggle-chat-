@@ -23,7 +23,7 @@ export const supabase = createClient(
     }
 );
 
-const NEXUS_BOT_ID = 'nexus-ai';
+const NEXUS_BOT_ID = 'a9931995-370a-42f3-b8a1-56a78954f9c2';
 
 // ==========================================
 // HELPERS
