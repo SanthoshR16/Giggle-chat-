@@ -9,7 +9,7 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 
 const isValidUrl = (url: string) => url && url.startsWith('http');
 
-// Initialize with explicit persistence settings
+// Initialize with explicit persistence settings for stability
 export const supabase = createClient(
     isValidUrl(SUPABASE_URL) ? SUPABASE_URL : 'https://placeholder.supabase.co', 
     SUPABASE_ANON_KEY,
@@ -18,12 +18,18 @@ export const supabase = createClient(
         persistSession: true,
         autoRefreshToken: true,
         detectSessionInUrl: true,
-        storageKey: 'giggle_auth_token'
+        storageKey: 'giggle_auth_token',
+        flowType: 'pkce'
+      },
+      realtime: {
+        params: {
+          eventsPerSecond: 10
+        }
       }
     }
 );
 
-const NEXUS_BOT_ID = 'a9931995-370a-42f3-b8a1-56a78954f9c2';
+const NEXUS_BOT_ID = 'nexus-ai';
 
 // ==========================================
 // HELPERS
@@ -87,10 +93,9 @@ export const SupabaseService = {
 
   logout: async () => {
     await supabase.auth.signOut();
-    localStorage.clear();
+    localStorage.clear(); // Clear all local storage on logout
   },
 
-  // OPTIMIZED: Returns immediately from LocalStorage/Session
   getCurrentUser: async (): Promise<User | null> => {
     // 1. Offline Check
     if (typeof navigator !== 'undefined' && !navigator.onLine) {
@@ -164,13 +169,18 @@ export const SupabaseService = {
 
   searchUsers: async (query: string, currentUserId: string): Promise<User[]> => {
     if (!query) return [];
+    // Ensure we are not just searching locally; RLS policies on Supabase must allow public read of profiles
     const { data, error } = await supabase
       .from('profiles')
       .select('*')
       .neq('id', currentUserId)
       .or(`full_name.ilike.%${query}%,email.ilike.%${query}%`)
       .limit(20);
-    if (error) return [];
+    
+    if (error) {
+        console.warn("Search failed:", error.message);
+        return [];
+    }
     return (data || []).map(mapProfileToUser);
   },
 
@@ -184,7 +194,6 @@ export const SupabaseService = {
     if (updates.status !== undefined) extraUpdates.status = updates.status;
     if (updates.customBotName !== undefined) extraUpdates.custom_bot_name = updates.customBotName;
 
-    // Save to local cache immediately for speed
     try {
         const existing = JSON.parse(localStorage.getItem(`prefs_${userId}`) || '{}');
         localStorage.setItem(`prefs_${userId}`, JSON.stringify({ ...existing, ...extraUpdates }));
