@@ -66,8 +66,9 @@ export default function App() {
 
       if (event === 'SIGNED_OUT') {
         setUser(null);
+        setOnlineUsers({}); // Clear presence data
         setView(AppView.LOGIN);
-        setOnlineUsers({});
+        setIsLoading(false); // Stop loader if active
       } else if (event === 'SIGNED_IN' && session?.user) {
          // If we are currently at LOGIN or loading, update to CHAT
          if (!user || user.id !== session.user.id) {
@@ -109,11 +110,17 @@ export default function App() {
 
   const handleLogout = async () => {
     setIsLoading(true);
-    await SupabaseService.logout();
-    if (isMounted.current) {
-        setUser(null);
-        setView(AppView.LOGIN);
-        setIsLoading(false);
+    try {
+        await SupabaseService.logout();
+    } catch (e) {
+        console.error("Manual logout failed:", e);
+    } finally {
+        if (isMounted.current) {
+            setUser(null);
+            setOnlineUsers({});
+            setView(AppView.LOGIN);
+            setIsLoading(false);
+        }
     }
   };
 

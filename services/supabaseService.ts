@@ -144,14 +144,31 @@ export const SupabaseService = {
   },
 
   logout: async () => {
-    // Untrack presence before signing out
+    // 1. Clean up Realtime Presence safely
     if (SupabaseService.presenceChannel) {
-        await SupabaseService.presenceChannel.untrack();
-        supabase.removeChannel(SupabaseService.presenceChannel);
+        try {
+            await SupabaseService.presenceChannel.untrack();
+        } catch (e) {
+            console.warn("Presence untrack failed (ignoring):", e);
+        }
+        try {
+            supabase.removeChannel(SupabaseService.presenceChannel);
+        } catch (e) {
+             console.warn("Remove channel failed (ignoring):", e);
+        }
         SupabaseService.presenceChannel = null;
     }
-    await supabase.auth.signOut();
+
+    // 2. Local Cleanup
     localStorage.removeItem('giggle_auth_token'); 
+    
+    // 3. Supabase SignOut
+    try {
+        const { error } = await supabase.auth.signOut();
+        if (error) console.error("SignOut error:", error);
+    } catch (e) {
+        console.error("SignOut exception:", e);
+    }
   },
 
   getCurrentUser: async (): Promise<User | null> => {
