@@ -7,11 +7,12 @@ import { THEMES } from '../theme';
 
 interface ChatLayoutProps {
   currentUser: User;
+  onlineUsers: Record<string, any>;
   onLogout: () => void;
   onOpenSettings: () => void;
 }
 
-const ChatLayout: React.FC<ChatLayoutProps> = ({ currentUser, onLogout, onOpenSettings }) => {
+const ChatLayout: React.FC<ChatLayoutProps> = ({ currentUser, onlineUsers, onLogout, onOpenSettings }) => {
   const [selectedFriendId, setSelectedFriendId] = useState<string | null>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
@@ -40,6 +41,7 @@ const ChatLayout: React.FC<ChatLayoutProps> = ({ currentUser, onLogout, onOpenSe
       `}>
         <Sidebar 
           currentUser={currentUser} 
+          onlineUsers={onlineUsers}
           onSelectFriend={handleSelectFriend}
           selectedFriendId={selectedFriendId}
           onLogout={onLogout}

@@ -11,39 +11,39 @@ export default function App() {
   const [view, setView] = useState<AppView>(AppView.LOGIN);
   const [isLoading, setIsLoading] = useState(true);
   
+  // Real-time presence state
+  const [onlineUsers, setOnlineUsers] = useState<Record<string, any>>({});
+  
   // Use a ref to prevent state updates on unmount
   const isMounted = useRef(false);
 
   useEffect(() => {
     isMounted.current = true;
 
-    // 1. Hard Failsafe: No matter what, stop loading after 3 seconds
+    // 1. Hard Failsafe: Stop loading after 5 seconds to prevent infinite loops on slow networks
     const safetyTimer = setTimeout(() => {
       if (isMounted.current && isLoading) {
         console.warn("Loading timed out. Forcing UI render.");
         setIsLoading(false);
       }
-    }, 3000);
+    }, 5000);
 
     const init = async () => {
       try {
         // Instant offline check
         if (!navigator.onLine) {
-           throw new Error("Offline");
+           console.warn("App is offline");
         }
 
-        // Fetch user with a strict 2s timeout logic inline
-        const userPromise = SupabaseService.getCurrentUser();
-        const timeoutPromise = new Promise<null>(resolve => setTimeout(() => resolve(null), 2000));
-        
-        const currentUser = await Promise.race([userPromise, timeoutPromise]);
+        // Direct fetch without complex races
+        const currentUser = await SupabaseService.getCurrentUser();
 
         if (isMounted.current) {
           if (currentUser) {
             setUser(currentUser);
             setView(AppView.CHAT);
-            // Background refresh
-            SupabaseService.refreshProfile(currentUser.id).catch(() => {});
+            // Attempt to ensure profile exists in background
+            SupabaseService.ensureProfileExists(currentUser).catch(() => {});
           } else {
             setView(AppView.LOGIN);
           }
@@ -67,15 +67,19 @@ export default function App() {
       if (event === 'SIGNED_OUT') {
         setUser(null);
         setView(AppView.LOGIN);
+        setOnlineUsers({});
       } else if (event === 'SIGNED_IN' && session?.user) {
-        // Only refresh if we don't have a user or IDs mismatch
-        if (!user || user.id !== session.user.id) {
+         // If we are currently at LOGIN or loading, update to CHAT
+         if (!user || user.id !== session.user.id) {
+           // Small delay to ensure session is propogated
+           await new Promise(r => setTimeout(r, 100));
            const u = await SupabaseService.getCurrentUser();
            if (isMounted.current && u) {
              setUser(u);
              setView(AppView.CHAT);
+             setIsLoading(false);
            }
-        }
+         }
       }
     });
 
@@ -85,6 +89,23 @@ export default function App() {
       subscription.unsubscribe();
     };
   }, []);
+
+  // Presence Subscription Effect
+  useEffect(() => {
+      let cleanup: (() => void) | undefined;
+      
+      if (user && view === AppView.CHAT) {
+          cleanup = SupabaseService.initializePresence(user.id, (statuses) => {
+              if (isMounted.current) {
+                  setOnlineUsers(statuses);
+              }
+          });
+      }
+      
+      return () => {
+          if (cleanup) cleanup();
+      };
+  }, [user?.id, view]);
 
   const handleLogout = async () => {
     setIsLoading(true);
@@ -121,11 +142,11 @@ export default function App() {
         user ? (
           <ChatLayout 
             currentUser={user} 
+            onlineUsers={onlineUsers}
             onLogout={handleLogout}
             onOpenSettings={() => setView(AppView.SETTINGS)}
           />
         ) : (
-          // Fallback if view is CHAT but user is null (rare race condition)
           <LoginScreen 
             onLogin={(u) => {
               setUser(u);

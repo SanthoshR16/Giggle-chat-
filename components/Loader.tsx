@@ -1,12 +1,17 @@
 import React, { useEffect, useState } from 'react';
-import { Loader2 } from 'lucide-react';
+import { Loader2, RefreshCw } from 'lucide-react';
 
 const Loader: React.FC = () => {
   const [longLoad, setLongLoad] = useState(false);
+  const [stuckLoad, setStuckLoad] = useState(false);
 
   useEffect(() => {
     const timer = setTimeout(() => setLongLoad(true), 2000);
-    return () => clearTimeout(timer);
+    const stuckTimer = setTimeout(() => setStuckLoad(true), 5000);
+    return () => {
+        clearTimeout(timer);
+        clearTimeout(stuckTimer);
+    }
   }, []);
 
   return (
@@ -20,10 +25,22 @@ const Loader: React.FC = () => {
         Giggle Chat
       </h2>
       
-      {longLoad && (
+      {longLoad && !stuckLoad && (
         <p className="mt-2 text-slate-500 text-xs font-medium animate-in fade-in duration-500">
           Connecting to secure server...
         </p>
+      )}
+
+      {stuckLoad && (
+        <div className="mt-4 flex flex-col items-center animate-in fade-in">
+             <p className="text-slate-500 text-xs mb-3">Taking longer than usual.</p>
+             <button 
+                onClick={() => window.location.reload()} 
+                className="px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-lg text-xs font-bold flex items-center gap-2 transition"
+             >
+                <RefreshCw className="w-3 h-3" /> Reload App
+             </button>
+        </div>
       )}
     </div>
   );

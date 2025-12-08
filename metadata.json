@@ -1,5 +1,8 @@
 {
   "name": "Giggle Chat",
   "description": "A fun, secure, and customizable chat application with AI-powered safety features.",
-  "requestFramePermissions": []
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
 }

@@ -1,4 +1,4 @@
-import { createClient } from '@supabase/supabase-js';
+import { createClient, RealtimeChannel } from '@supabase/supabase-js';
 import { User, Message } from '../types';
 
 // ==========================================
@@ -37,7 +37,7 @@ const NEXUS_BOT_ID = 'nexus-ai';
 
 const mapProfileToUser = (profile: any): User => ({
   id: profile.id,
-  name: profile.full_name || profile.name || 'Anonymous', 
+  name: profile.full_name || profile.name || 'Unknown User', 
   email: profile.email || '',
   avatarUrl: profile.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(profile.full_name || 'User')}&background=random`,
   status: (profile.status as any) || 'online',
@@ -61,13 +61,65 @@ const getBotUser = (): User => ({
 // ==========================================
 
 export const SupabaseService = {
+  // --- REALTIME PRESENCE ---
+  presenceChannel: null as RealtimeChannel | null,
+
+  initializePresence: (userId: string, onPresenceUpdate: (statusMap: Record<string, any>) => void) => {
+    // Cleanup old channel if exists
+    if (SupabaseService.presenceChannel) {
+        supabase.removeChannel(SupabaseService.presenceChannel);
+    }
+
+    const channel = supabase.channel('global_presence', {
+        config: { presence: { key: userId } }
+    });
+
+    channel
+        .on('presence', { event: 'sync' }, () => {
+            const newState = channel.presenceState();
+            const statusMap: Record<string, any> = {};
+            
+            Object.keys(newState).forEach(id => {
+                const presenceData = newState[id][0] as any; // Get latest
+                statusMap[id] = {
+                    status: presenceData.status || 'online',
+                    lastSeen: presenceData.last_seen
+                };
+            });
+            onPresenceUpdate(statusMap);
+        })
+        .subscribe(async (status) => {
+            if (status === 'SUBSCRIBED') {
+                await channel.track({ 
+                    status: 'online', 
+                    last_seen: new Date().toISOString() 
+                });
+            }
+        });
+
+    SupabaseService.presenceChannel = channel;
+    
+    return () => {
+        if (SupabaseService.presenceChannel) {
+            SupabaseService.presenceChannel.untrack();
+            supabase.removeChannel(SupabaseService.presenceChannel);
+            SupabaseService.presenceChannel = null;
+        }
+    };
+  },
+
   // --- AUTH & PROFILE ---
 
   login: async (email: string, password: string) => {
     if (!isValidUrl(SUPABASE_URL)) return { error: "Supabase URL missing." };
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) return { error: error.message };
-    // Optimistic return
+    
+    // Ensure profile row exists on login
+    if (data.user) {
+        SupabaseService.ensureProfileExists(data.user).catch(console.error);
+    }
+
     return { user: { id: data.user?.id, email, name: 'User' } };
   },
 
@@ -92,8 +144,14 @@ export const SupabaseService = {
   },
 
   logout: async () => {
+    // Untrack presence before signing out
+    if (SupabaseService.presenceChannel) {
+        await SupabaseService.presenceChannel.untrack();
+        supabase.removeChannel(SupabaseService.presenceChannel);
+        SupabaseService.presenceChannel = null;
+    }
     await supabase.auth.signOut();
-    localStorage.clear(); // Clear all local storage on logout
+    localStorage.removeItem('giggle_auth_token'); 
   },
 
   getCurrentUser: async (): Promise<User | null> => {
@@ -143,14 +201,12 @@ export const SupabaseService = {
      } catch { return null; }
   },
 
-  ensureProfileExists: async (authUser: any): Promise<User> => {
-      return { 
-          id: authUser.id, 
-          name: authUser.user_metadata?.full_name || 'User', 
-          email: authUser.email || '',
-          avatarUrl: '',
-          status: 'online'
-      };
+  ensureProfileExists: async (authUser: any): Promise<void> => {
+      // Check if profile exists
+      const { data } = await supabase.from('profiles').select('id').eq('id', authUser.id).maybeSingle();
+      if (!data) {
+          await SupabaseService.createProfileRow(authUser, authUser.user_metadata?.full_name || 'User');
+      }
   },
 
   createProfileRow: async (authUser: any, name: string) => {
@@ -169,7 +225,6 @@ export const SupabaseService = {
 
   searchUsers: async (query: string, currentUserId: string): Promise<User[]> => {
     if (!query) return [];
-    // Ensure we are not just searching locally; RLS policies on Supabase must allow public read of profiles
     const { data, error } = await supabase
       .from('profiles')
       .select('*')
@@ -186,25 +241,42 @@ export const SupabaseService = {
 
   updateProfile: async (userId: string, updates: Partial<User>) => {
     const dbUpdates: any = {};
+    
+    // Map User model properties to DB columns
+    // We consolidate all updates into one object to prevent race conditions and ensure atomicity
     if (updates.name !== undefined) dbUpdates.full_name = updates.name;
     if (updates.avatarUrl !== undefined) dbUpdates.avatar_url = updates.avatarUrl;
+    if (updates.theme !== undefined) dbUpdates.theme = updates.theme;
+    if (updates.status !== undefined) dbUpdates.status = updates.status;
+    if (updates.customBotName !== undefined) dbUpdates.custom_bot_name = updates.customBotName;
 
-    const extraUpdates: any = {};
-    if (updates.theme !== undefined) extraUpdates.theme = updates.theme;
-    if (updates.status !== undefined) extraUpdates.status = updates.status;
-    if (updates.customBotName !== undefined) extraUpdates.custom_bot_name = updates.customBotName;
+    // SYNC PRESENCE IF STATUS CHANGED
+    if (updates.status && SupabaseService.presenceChannel) {
+        SupabaseService.presenceChannel.track({
+            status: updates.status,
+            last_seen: new Date().toISOString()
+        });
+    }
 
+    // Local Storage caching for offline/fast load
     try {
         const existing = JSON.parse(localStorage.getItem(`prefs_${userId}`) || '{}');
-        localStorage.setItem(`prefs_${userId}`, JSON.stringify({ ...existing, ...extraUpdates }));
+        const prefsToSave = { ...existing };
+        if (updates.theme) prefsToSave.theme = updates.theme;
+        if (updates.customBotName) prefsToSave.customBotName = updates.customBotName;
+        localStorage.setItem(`prefs_${userId}`, JSON.stringify(prefsToSave));
     } catch(e) {}
 
+    // Perform DB Update
     if (Object.keys(dbUpdates).length > 0) {
-        await supabase.from('profiles').update(dbUpdates).eq('id', userId);
+        // We await the result and return error if any
+        const { error } = await supabase.from('profiles').update(dbUpdates).eq('id', userId);
+        if (error) {
+            console.error("Supabase update failed:", error);
+            return { error: error.message };
+        }
     }
-    if (Object.keys(extraUpdates).length > 0) {
-        await supabase.from('profiles').update(extraUpdates).eq('id', userId);
-    }
+    
     return { error: null };
   },
 
@@ -215,16 +287,50 @@ export const SupabaseService = {
           .select('sender_id, receiver_id')
           .eq('status', 'accepted')
           .or(`sender_id.eq.${userId},receiver_id.eq.${userId}`);
-        if (!requests) return [getBotUser()];
+        
+        if (!requests || requests.length === 0) return [getBotUser()];
+        
         const friendIds = requests.map(r => r.sender_id === userId ? r.receiver_id : r.sender_id);
+        
         if (friendIds.length === 0) return [getBotUser()];
-        const { data: profiles } = await supabase.from('profiles').select('*').in('id', friendIds);
-        const users = (profiles || []).map(mapProfileToUser);
+
+        const { data: profiles, error } = await supabase.from('profiles').select('*').in('id', friendIds);
+        
+        if (error || !profiles) {
+            console.warn("Could not load friend profiles (Check RLS policies)", error);
+            return [getBotUser(), ...friendIds.map(id => ({
+                id, 
+                name: 'Friend (Loading...)', 
+                email: '', 
+                avatarUrl: 'https://via.placeholder.com/40', 
+                status: 'offline' as const 
+            }))];
+        }
+
+        const users = profiles.map(mapProfileToUser);
+        
+        const loadedIds = new Set(users.map(u => u.id));
+        friendIds.forEach(fid => {
+            if (!loadedIds.has(fid)) {
+                users.push({
+                    id: fid,
+                    name: 'Unknown User',
+                    email: '',
+                    avatarUrl: 'https://via.placeholder.com/40',
+                    status: 'offline'
+                });
+            }
+        });
+
         const bot = getBotUser();
         const currentUser = await SupabaseService.getCurrentUser();
         if (currentUser?.customBotName) bot.name = currentUser.customBotName;
+        
         return [bot, ...users];
-    } catch (e) { return [getBotUser()]; }
+    } catch (e) { 
+        console.error("getContacts error", e);
+        return [getBotUser()]; 
+    }
   },
 
   sendFriendRequest: async (senderId: string, receiverId: string) => {

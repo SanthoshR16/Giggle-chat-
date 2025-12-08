@@ -105,20 +105,24 @@ const SettingsScreen: React.FC<SettingsProps> = ({ currentUser, onBack, onUpdate
     setErrorMsg(null);
 
     try {
-      const updates = { 
+      const updates: Partial<User> = { 
         name, 
-        avatarUrl,
         customBotName: botName,
         theme: selectedTheme
       };
       
+      // Only include avatarUrl if it has changed to avoid sending large base64 strings unnecessarily
+      if (avatarUrl !== currentUser.avatarUrl) {
+          updates.avatarUrl = avatarUrl;
+      }
+      
       const { error } = await SupabaseService.updateProfile(currentUser.id, updates);
       
       if (error) {
-          throw new Error(error.message);
+          throw new Error(error);
       }
       
-      onUpdateUser(updates);
+      onUpdateUser({ ...updates, avatarUrl }); // Update local state
       setSaveSuccess(true);
       setTimeout(() => {
         setIsSaving(false);
@@ -128,9 +132,9 @@ const SettingsScreen: React.FC<SettingsProps> = ({ currentUser, onBack, onUpdate
 
     } catch (error: any) {
       console.error("Save failed:", error);
-      const msg = error.message || "Unknown error";
+      const msg = error.message || String(error);
       if (msg.includes("policy") || msg.includes("permission")) {
-          setErrorMsg("Permission Denied: Ensure you have an UPDATE policy in Supabase.");
+          setErrorMsg("Permission Denied: DB Policy error.");
       } else {
           setErrorMsg(`Error: ${msg}`);
       }
@@ -153,7 +157,7 @@ const SettingsScreen: React.FC<SettingsProps> = ({ currentUser, onBack, onUpdate
         {errorMsg && (
             <div className="bg-red-900/50 border border-red-500 rounded-xl p-4 flex gap-3 text-red-200">
                 <AlertTriangle className="w-6 h-6 shrink-0" />
-                <div className="text-xs font-mono">{errorMsg}</div>
+                <div className="text-xs font-mono break-all">{errorMsg}</div>
             </div>
         )}
 

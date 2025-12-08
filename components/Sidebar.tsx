@@ -6,13 +6,14 @@ import { THEMES } from '../theme';
 
 interface SidebarProps {
   currentUser: User;
+  onlineUsers: Record<string, any>;
   onSelectFriend: (id: string) => void;
   selectedFriendId: string | null;
   onLogout: () => void;
   onOpenSettings: () => void;
 }
 
-const Sidebar: React.FC<SidebarProps> = ({ currentUser, onSelectFriend, selectedFriendId, onLogout, onOpenSettings }) => {
+const Sidebar: React.FC<SidebarProps> = ({ currentUser, onlineUsers, onSelectFriend, selectedFriendId, onLogout, onOpenSettings }) => {
   const [activeTab, setActiveTab] = useState<'friends' | 'search'>('friends');
   const [searchQuery, setSearchQuery] = useState('');
   const [contacts, setContacts] = useState<User[]>([]);
@@ -80,6 +81,20 @@ const Sidebar: React.FC<SidebarProps> = ({ currentUser, onSelectFriend, selected
       default: return 'bg-slate-400';
     }
   };
+
+  // Merge Contacts with Realtime Presence
+  const displayContacts = contacts.map(c => {
+    if (c.isBot) return c; // Bots status is managed internally or static
+    
+    // Check realtime presence
+    const presence = onlineUsers[c.id];
+    if (presence) {
+        return { ...c, status: presence.status || 'online' };
+    }
+    
+    // If not in presence map, they are offline
+    return { ...c, status: 'offline' };
+  });
 
   return (
     <div className={`flex flex-col h-full ${theme.bgPanel} backdrop-blur-md border-r ${theme.border}`}>
@@ -177,7 +192,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentUser, onSelectFriend, selected
             )}
 
             {/* Friend List */}
-            {contacts.length === 0 ? (
+            {displayContacts.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-40 text-center px-4">
                      <div className="w-12 h-12 bg-white/5 rounded-full flex items-center justify-center mb-3">
                         <Users className={`w-6 h-6 ${theme.textMuted} opacity-40`} />
@@ -186,7 +201,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentUser, onSelectFriend, selected
                 </div>
             ) : (
                 <div className="space-y-1">
-                    {contacts.map(friend => (
+                    {displayContacts.map(friend => (
                         <button
                             key={friend.id}
                             onClick={() => onSelectFriend(friend.id)}
